@@ -1,0 +1,12 @@
+#include <windows.h>
+#include "resources.h"
+
+// Embed the application manifest (common controls v6 + DPI awareness).
+// 1 = resource ID for the executable, 24 = RT_MANIFEST.
+1 24 "app.manifest"
+
+// Application icon (multi-size .ico).
+IDI_APP ICON "RDSM.ico"
+
+// About dialog image (PNG, loaded via GDI+ at runtime).
+IDR_ABOUT_PNG RCDATA "RDSM_128.png"

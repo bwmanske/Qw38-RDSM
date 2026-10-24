@@ -95,7 +95,8 @@ bool App::init(HINSTANCE hInst) {
 int App::run() {
     // Load the config before creating the window so the saved size and
     // position can be applied at creation time.
-    config_ = rdsmon::loadConfig();
+    rdsmon::LoadStatus loadStatus = rdsmon::LoadStatus::Ok;
+    config_ = rdsmon::loadConfig(&loadStatus);
 
     int x = CW_USEDEFAULT, y = CW_USEDEFAULT, w = 940, h = 540;
     if (config_.hasWindowPosition) {
@@ -117,6 +118,12 @@ int App::run() {
 
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
+
+    // If the config file was corrupt (not valid JSON), no data was read from it.
+    // Warn the user and ask permission to overwrite the file with the new data.
+    if (loadStatus == rdsmon::LoadStatus::Corrupt) {
+        promptToRewriteCorruptConfig();
+    }
 
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -615,6 +622,21 @@ void App::showSettings() {
 
 void App::showAbout() {
     AboutDialog::show(hwnd_);
+}
+
+void App::promptToRewriteCorruptConfig() {
+    const std::wstring path = rdsmon::configFilePath();
+    const std::wstring message =
+        L"The configuration file could not be read because it is not valid JSON:\n\n"
+        + path + L"\n\n"
+        L"No shares were loaded from it. Allow RDSM to overwrite the file with the "
+        L"current share list? If you choose No, the file is left unchanged and the "
+        L"in-memory list will be lost when RDSM exits.";
+    const int result = MessageBoxW(hwnd_, message.c_str(), L"Corrupt Configuration File",
+                                   MB_YESNO | MB_ICONWARNING);
+    if (result == IDYES) {
+        rdsmon::saveConfig(config_);
+    }
 }
 
 void App::restartAutoRefreshTimer() {

@@ -4,8 +4,8 @@
 #include <windowsx.h>
 #include <commctrl.h>
 
-#include <cwctype>
-#include <map>
+#include "shares.h"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +35,7 @@ enum : UINT {
     IDC_MoveDown,
     IDC_Save,
     IDC_Cancel,
+    IDC_Error,
 };
 
 std::wstring trim(const std::wstring& s) {
@@ -74,36 +75,6 @@ void lbAddString(HWND h, const wchar_t* s) {
     SendMessageW(h, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
 }
 
-// Lowercase copy, for case-insensitive share-name comparison (Windows share
-// paths and drive letters are case-insensitive).
-std::wstring toLower(const std::wstring& s) {
-    std::wstring r(s);
-    for (wchar_t& c : r) {
-        c = static_cast<wchar_t>(::towlower(static_cast<wint_t>(c)));
-    }
-    return r;
-}
-
-// Indices that are the first occurrence of a share name appearing more than
-// once (case-insensitive). These are drawn in red to flag the duplicate.
-std::vector<bool> findDuplicateFirst(const std::vector<std::wstring>& shares) {
-    std::vector<bool> red(shares.size(), false);
-    std::map<std::wstring, std::pair<int, int>> firstAndCount; // name -> {firstIndex, count}
-    for (int i = 0; i < static_cast<int>(shares.size()); ++i) {
-        auto& p = firstAndCount[toLower(shares[i])];
-        if (p.second == 0) {
-            p.first = i;
-        }
-        ++p.second;
-    }
-    for (const auto& kv : firstAndCount) {
-        if (kv.second.second > 1) {
-            red[kv.second.first] = true;
-        }
-    }
-    return red;
-}
-
 } // namespace
 
 bool EditDialog::show(HWND parent, const std::vector<std::wstring>& initial,
@@ -125,7 +96,7 @@ bool EditDialog::show(HWND parent, const std::vector<std::wstring>& initial,
     dlg.hwnd_ = CreateWindowExW(
         WS_EX_CONTROLPARENT, kDialogClass, L"Edit Shares",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, 520, 440,
+        CW_USEDEFAULT, CW_USEDEFAULT, 520, 448,
         parent, nullptr, dlg.hInst_, &dlg);
     if (!dlg.hwnd_) {
         return false;
@@ -183,9 +154,21 @@ LRESULT EditDialog::handleMsg(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         case WM_DRAWITEM:
             return onDrawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lParam));
+        case WM_CTLCOLORSTATIC: {
+            // Paint the error label (lower-left) in red; other statics use the
+            // default colors.
+            if (reinterpret_cast<HWND>(wParam) == hwndError_) {
+                HDC hdc = reinterpret_cast<HDC>(lParam);
+                SetTextColor(hdc, RGB(200, 0, 0));
+                SetBkColor(hdc, GetSysColor(COLOR_BTNFACE));
+                return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+            }
+            break;
+        }
         case WM_CLOSE:
-            // The title-bar X is a close path too; block it while duplicates remain.
-            if (!hasDuplicates()) {
+            // The title-bar X returns to the previously saved configuration; it is
+            // a known-good state only if that saved list passed validation.
+            if (!initialHasErrors_) {
                 close(false);
             }
             return 0;
@@ -244,20 +227,32 @@ void EditDialog::onCreate(HWND hwnd) {
                                    WS_CHILD | WS_VISIBLE, 0, 0, 10, 10,
                                    hwnd_, reinterpret_cast<HMENU>(IDC_Save), hInst_, nullptr);
     HWND btnCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
-                                     WS_CHILD | WS_VISIBLE, 0, 0, 10, 10,
-                                     hwnd_, reinterpret_cast<HMENU>(IDC_Cancel), hInst_, nullptr);
+                                      WS_CHILD | WS_VISIBLE, 0, 0, 10, 10,
+                                      hwnd_, reinterpret_cast<HMENU>(IDC_Cancel), hInst_, nullptr);
+
+    // Red error label in the lower-left corner: shows the error for the
+    // currently selected listbox line (blank when that line is valid).
+    hwndError_ = CreateWindowExW(0, L"STATIC", L"",
+                                 WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
+                                 0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(IDC_Error),
+                                 hInst_, nullptr);
 
     for (HWND c : {hwndList_, hwndEdit_, btnAdd, btnUpdate, btnRemove,
-                   btnMoveUp, btnMoveDown, btnSave, btnCancel}) {
+                   btnMoveUp, btnMoveDown, btnSave, btnCancel, hwndError_}) {
         SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(hFont_), TRUE);
     }
 
-    // Compute the duplicate marking before populating the list so items are
-    // drawn with the correct (red) color from the first paint.
-    recomputeDuplicates();
+    // Run the error test before populating the list so items are drawn with the
+    // correct (red) color from the first paint and the buttons reflect the
+    // initial state. Remember whether the initially loaded (saved) list had an
+    // error: Cancel / the title-bar X return to that saved state, so they are
+    // only a known-good escape when it passed validation.
+    recomputeErrors();
+    initialHasErrors_ = hasErrors();
     syncList();
     updateMoveButtons();
-    updateCloseButtons();
+    updateButtons();
+    updateErrorLabel();
 }
 
 void EditDialog::onSize() {
@@ -271,8 +266,11 @@ void EditDialog::onSize() {
     const int buttonH = 26;
     const int editH = 24;
     const int buttonW = 84;
+    // Extra room (about a half line) so the error label can show a wrapped second
+    // line; the Save/Cancel buttons are shifted down by the same amount.
+    const int extraH = 8;
 
-    int bottomRowY = h - margin - buttonH;
+    int bottomRowY = h - margin - buttonH - extraH;
     int midRowY = bottomRowY - gap - buttonH;
     int editY = midRowY - gap - editH;
     int listTop = margin;
@@ -287,8 +285,16 @@ void EditDialog::onSize() {
     MoveWindow(GetDlgItem(hwnd_, IDC_MoveUp), margin + 3 * (buttonW + gap), midRowY, buttonW, buttonH, TRUE);
     MoveWindow(GetDlgItem(hwnd_, IDC_MoveDown), margin + 4 * (buttonW + gap), midRowY, buttonW, buttonH, TRUE);
 
-    MoveWindow(GetDlgItem(hwnd_, IDC_Cancel), w - margin - buttonW, bottomRowY, buttonW, buttonH, TRUE);
-    MoveWindow(GetDlgItem(hwnd_, IDC_Save), w - margin - 2 * (buttonW + gap), bottomRowY, buttonW, buttonH, TRUE);
+    // Save/Cancel sit a half line lower so the (taller) error label's second line
+    // is not covered; their bottoms align with the error label's bottom.
+    MoveWindow(GetDlgItem(hwnd_, IDC_Cancel), w - margin - buttonW, bottomRowY + extraH, buttonW, buttonH, TRUE);
+    MoveWindow(GetDlgItem(hwnd_, IDC_Save), w - margin - 2 * (buttonW + gap), bottomRowY + extraH, buttonW, buttonH, TRUE);
+
+    // Error label: lower-left corner, spanning from the left margin to just left
+    // of the Save button. It is a half line taller than the buttons so a wrapped
+    // second line of error text is fully visible.
+    const int saveLeft = w - margin - 2 * (buttonW + gap);
+    MoveWindow(hwndError_, margin, bottomRowY, saveLeft - margin - gap, buttonH + extraH, TRUE);
 }
 
 void EditDialog::onCommand(WPARAM wParam) {
@@ -301,6 +307,7 @@ void EditDialog::onCommand(WPARAM wParam) {
             SetWindowTextW(hwndEdit_, shares_[sel].c_str());
         }
         updateMoveButtons();
+        updateErrorLabel();
         return;
     }
 
@@ -312,9 +319,10 @@ void EditDialog::onCommand(WPARAM wParam) {
                 syncList();
                 lbSetCurSel(hwndList_, static_cast<int>(shares_.size()) - 1);
                 SetWindowTextW(hwndEdit_, L"");
-                recomputeDuplicates();
+                recomputeErrors();
                 updateMoveButtons();
-                updateCloseButtons();
+                updateButtons();
+                updateErrorLabel();
             }
             break;
         }
@@ -325,9 +333,10 @@ void EditDialog::onCommand(WPARAM wParam) {
                 shares_[sel] = text;
                 syncList();
                 lbSetCurSel(hwndList_, sel);
-                recomputeDuplicates();
+                recomputeErrors();
                 updateMoveButtons();
-                updateCloseButtons();
+                updateButtons();
+                updateErrorLabel();
             }
             break;
         }
@@ -337,9 +346,10 @@ void EditDialog::onCommand(WPARAM wParam) {
                 shares_.erase(shares_.begin() + sel);
                 syncList();
                 SetWindowTextW(hwndEdit_, L"");
-                recomputeDuplicates();
+                recomputeErrors();
                 updateMoveButtons();
-                updateCloseButtons();
+                updateButtons();
+                updateErrorLabel();
             }
             break;
         }
@@ -350,9 +360,10 @@ void EditDialog::onCommand(WPARAM wParam) {
                 syncList();
                 lbSetCurSel(hwndList_, sel - 1);
                 SetWindowTextW(hwndEdit_, shares_[sel - 1].c_str());
-                recomputeDuplicates();
+                recomputeErrors();
                 updateMoveButtons();
-                updateCloseButtons();
+                updateButtons();
+                updateErrorLabel();
             }
             break;
         }
@@ -363,20 +374,23 @@ void EditDialog::onCommand(WPARAM wParam) {
                 syncList();
                 lbSetCurSel(hwndList_, sel + 1);
                 SetWindowTextW(hwndEdit_, shares_[sel + 1].c_str());
-                recomputeDuplicates();
+                recomputeErrors();
                 updateMoveButtons();
-                updateCloseButtons();
+                updateButtons();
+                updateErrorLabel();
             }
             break;
         }
         case IDC_Save:
-            // Block closing while any duplicate (red) entry remains.
-            if (!hasDuplicates()) {
+            // Block saving while any line has an error (malformed or duplicate).
+            if (!hasErrors()) {
                 close(true);
             }
             break;
         case IDC_Cancel:
-            if (!hasDuplicates()) {
+            // Cancel returns to the previously saved configuration; it is a
+            // known-good state only if that saved list passed validation.
+            if (!initialHasErrors_) {
                 close(false);
             }
             break;
@@ -394,16 +408,16 @@ void EditDialog::syncList() {
     }
 }
 
-void EditDialog::recomputeDuplicates() {
-    dupFirst_ = findDuplicateFirst(shares_);
+void EditDialog::recomputeErrors() {
+    lineError_ = rdsmon::validateShares(shares_);
     // Force the listbox to redraw so the red marking updates (no erase: we fill
     // the item background ourselves in onDrawItem).
     InvalidateRect(hwndList_, nullptr, FALSE);
 }
 
-bool EditDialog::hasDuplicates() const {
-    for (bool b : dupFirst_) {
-        if (b) {
+bool EditDialog::hasErrors() const {
+    for (const std::wstring& e : lineError_) {
+        if (!e.empty()) {
             return true;
         }
     }
@@ -422,17 +436,32 @@ void EditDialog::updateMoveButtons() {
     EnableWindow(GetDlgItem(hwnd_, IDC_MoveDown), canDown ? TRUE : FALSE);
 }
 
-void EditDialog::updateCloseButtons() {
-    // While any duplicate (red) entry remains the dialog cannot be closed, so
-    // gray out Save, Cancel, and the title-bar X. When there are no duplicates
-    // all three are enabled (Cancel / X return to the previous configuration).
-    const BOOL enabled = hasDuplicates() ? FALSE : TRUE;
-    EnableWindow(GetDlgItem(hwnd_, IDC_Save), enabled);
-    EnableWindow(GetDlgItem(hwnd_, IDC_Cancel), enabled);
+void EditDialog::updateButtons() {
+    // Save is enabled only when the current list has no error (malformed or
+    // duplicate). Cancel and the title-bar X return to the previously saved
+    // configuration, so they are enabled only when that saved list had no error
+    // (a known-good state); if the saved list itself failed validation they are
+    // grayed out, since closing would return to bad data.
+    const BOOL saveEnabled = hasErrors() ? FALSE : TRUE;
+    const BOOL cancelEnabled = initialHasErrors_ ? FALSE : TRUE;
+    EnableWindow(GetDlgItem(hwnd_, IDC_Save), saveEnabled);
+    EnableWindow(GetDlgItem(hwnd_, IDC_Cancel), cancelEnabled);
     // The title-bar X can't be disabled directly; gray it via the system menu.
     if (HMENU sysMenu = GetSystemMenu(hwnd_, FALSE)) {
-        EnableMenuItem(sysMenu, SC_CLOSE, enabled ? MF_ENABLED : MF_GRAYED);
+        EnableMenuItem(sysMenu, SC_CLOSE, cancelEnabled ? MF_ENABLED : MF_GRAYED);
     }
+}
+
+void EditDialog::updateErrorLabel() {
+    if (!hwndError_) {
+        return;
+    }
+    const int sel = lbGetCurSel(hwndList_);
+    std::wstring text;
+    if (sel >= 0 && sel < static_cast<int>(lineError_.size()) && !lineError_[sel].empty()) {
+        text = lineError_[sel];
+    }
+    SetWindowTextW(hwndError_, text.c_str());
 }
 
 void EditDialog::onMeasureItem(MEASUREITEMSTRUCT* p) {
@@ -457,7 +486,7 @@ int EditDialog::onDrawItem(DRAWITEMSTRUCT* p) {
         return DA_REDO;
     }
     const bool selected = (p->itemState & ODS_SELECTED) != 0;
-    const bool red = (idx < static_cast<int>(dupFirst_.size())) && dupFirst_[idx];
+    const bool red = (idx < static_cast<int>(lineError_.size())) && !lineError_[idx].empty();
 
     const HBRUSH bg = selected ? reinterpret_cast<HBRUSH>(COLOR_HIGHLIGHT + 1)
                                : reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);

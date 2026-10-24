@@ -1,6 +1,6 @@
 # RDSM — Remote Disk Space Monitor (Spec & Session Context)
 
-**Version: 0.9** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
+**Version: 1.0** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
 the About dialog and this doc).
 
 ## Overview
@@ -40,6 +40,29 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
 12. **Auto refresh:** the app re-queries the shares automatically every Auto Refresh
     minutes. It does **not** refresh while the window is minimized. When the window goes
     from minimized to restored or maximized, it refreshes **immediately**.
+13. **Config error detection and correction (v1.0):**
+    - A *corrupted* file is one whose JSON **structure** is valid but whose **content** is
+      bad (malformed or duplicate shares, or other data a user mistyped in an editor).
+    - If the JSON **structure** is corrupt (not parseable), the file is **not read**. The
+      app must still start cleanly with no data read. It then **warns the user and asks
+      permission to write** the file. If the user declines, the file is left unchanged and
+      the in-memory data is kept only until exit.
+    - Only starting with **no `--JSON` on the command line** loads the default shares
+      (a corrupt/missing default file seeds the 6 defaults; a corrupt/missing custom file
+      starts empty).
+    - On startup the `autoRefreshMinutes` read from the JSON is validated to 1–3600; an
+      out-of-range value is replaced by the default of **30**.
+    - The **Edit Shares** dialog runs an extensible **error test** over the list (a
+      pipeline of checks; currently *malformed share* and *duplicate share*). A share is
+      valid if it is a drive letter `C:`–`Z:` or a UNC path `\\server\share` with valid
+      name characters. The test remembers the error for **each** listbox line. A **red
+      static label** in the lower-left corner shows the error for the selected line (blank
+      when that line is valid). The test runs on dialog creation and after every change.
+      **Save** is grayed out while the current list has any error. **Cancel and the
+      title-bar X** return to the previously saved configuration, so they are enabled only
+      when the **initially loaded (saved) list passed validation** — if the saved list
+      itself has an error (e.g. the user hand-edited the JSON), they are grayed out, since
+      closing would return to bad data.
 
 ## Design decisions
 
@@ -54,9 +77,10 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
      "autoRefreshMinutes": 15
    }
    ```
-   `columnWidths`, `windowSize`, and `windowPosition` are optional (omitted when not yet
-   saved). `autoRefreshMinutes` is always written (default 15; out-of-range values on read
-   fall back to 15). A bare top-level JSON array is also accepted on read (shares only).
+    `columnWidths`, `windowSize`, and `windowPosition` are optional (omitted when not yet
+    saved). `autoRefreshMinutes` is always written (default 15 when the field is absent; a
+    present but out-of-range value falls back to 30). A bare top-level JSON array is also
+    accepted on read (shares only).
    Written with `nlohmann::json::dump(2)`.
 - **First run (default file):** if `shares.json` doesn't exist, it is created and seeded
   with the 6 shares from `RDSM.ps1`: `\\Chip\work`, `\\Dale\work`, `\\bmanske-plex-pc\Plex-I`,
@@ -417,7 +441,7 @@ that broke the Free % bar and has been removed.
       them locally (guarded `#ifndef`: `DA_DRAWN 1`, `DA_REDO 2`, `DA_SKIP 3`) for the
       owner-drawn list box.
 
-## Current state (v0.9)
+## Current state (v1.0)
 
 Builds clean (no errors, no warnings) and runs. Verified by launching the exe:
 - first run creates `C:\Users\brad\AppData\Roaming\RDSM\shares.json` seeded with the 6 shares;
@@ -438,6 +462,24 @@ Builds clean (no errors, no warnings) and runs. Verified by launching the exe:
   default 15) and saves it to the JSON; an auto-refresh timer re-queries every N minutes,
   skips while minimized, and refreshes immediately on restore/maximize from minimized.
 
+**v1.0 — config error detection and correction** (unit-tested in `tests/test_validate.cpp`
+and `tests/test_config.cpp`; the GUI prompt/dialog are verified by running the exe):
+- A corrupt (unparseable) config file is **not read**; the app starts cleanly with the
+  "new data" (the 6 default shares for the default file, an empty list for a custom file),
+  **warns the user, and asks permission to overwrite the file**. Declining leaves the file
+  unchanged and keeps the in-memory data only until exit (see `App::promptToRewriteCorruptConfig`).
+- `autoRefreshMinutes` read from the JSON is validated to 1–3600; a present but out-of-range
+  value falls back to **30** (an absent field still defaults to 15).
+- The **Edit Shares** dialog runs an extensible **error test** (`rdsmon::validateShares`, a
+  pipeline of checks in `shares.cpp` — currently *malformed share* and *duplicate share*).
+  A share is valid if it is a drive letter `C:`–`Z:` or a UNC path `\\server\share` with
+  valid name characters. The test stores the error for **each** listbox line; a **red static
+  label** in the lower-left corner shows the selected line's error (blank when valid). The
+  test runs on dialog creation and after every Add/Update/Remove/Move. **Save** is grayed
+  out while the current list has any error. **Cancel and the title-bar X** are enabled only
+  when the initially loaded (saved) list passed validation — if the saved list itself has an
+  error (e.g. hand-edited JSON), they are grayed out since closing would return to bad data.
+
 Exe: `build\bin\Release\RDSM.exe` (note the `Release` subdir — the VS multi-config
 generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).
 
@@ -445,8 +487,11 @@ generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).
 (two-stage custom-draw handshake — see SDK gotchas and `docs/Common Solutions.md`), the
 `Offline` text in the Total Size column for unreachable shares, the Edit Shares dialog
 (add/update/remove + move up/down reorder; Save rewrites the JSON and refreshes the main
-window's list in the new order; a duplicated share shows its first instance in red; Move
-Up/Move Down gray out at the top/bottom and with 0–1 shares), the About dialog (image +
+window's list in the new order; any line with an error — malformed or duplicate — is drawn
+in red, the selected line's error is shown in a red lower-left label, Save is grayed out
+while the current list has an error, and Cancel/X are grayed out when the saved list itself
+has an error); Move Up/Move Down gray out at the top/bottom and with 0–1 shares), the About
+dialog (image +
 name + version + build time + short description), the window/taskbar icon, live share
 data, the Settings dialog (Auto Refresh field + validation), the auto-refresh behavior
 (re-queries on the interval, suspends the timer while minimized, immediate refresh + timer

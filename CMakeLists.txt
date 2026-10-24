@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Project version (shown in the About dialog; see specs/RDSM spec.md).
-set(RDSM_VERSION "0.9")
+set(RDSM_VERSION "1.0")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -99,6 +99,7 @@ if(BUILD_TESTING)
         tests/test_format.cpp
         tests/test_query.cpp
         tests/test_config.cpp
+        tests/test_validate.cpp
         src/shares.cpp
     )
 

@@ -69,6 +69,12 @@ private:
     void showSettings();
     void showAbout();
 
+    // Shown at startup when the config file was corrupt (not valid JSON): warns
+    // the user and asks permission to overwrite the file with the new data. If
+    // they decline, the file is left unchanged and the in-memory data is lost on
+    // exit.
+    void promptToRewriteCorruptConfig();
+
     // Persists UI state to the config file.
     void saveColumnWidths();
     void saveWindowSizeAndPosition();

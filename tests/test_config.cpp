@@ -140,17 +140,20 @@ TEST(loadConfig_acceptsBareArray) {
     }
 }
 
-// A file that exists but is not valid JSON returns an empty config and is NOT
-// clobbered (the original bytes are preserved).
-TEST(loadConfig_invalidJsonReturnsEmptyAndNotClobbered) {
+// A default file that exists but is not valid JSON (structure corrupt) is not
+// read: the config is seeded with the default shares, the status is Corrupt,
+// and the file is NOT clobbered (the original bytes are preserved).
+TEST(loadConfig_defaultFileCorruptSeedsDefaultsAndReportsCorrupt) {
     const std::wstring path = freshConfigPath();
     const std::string invalid = "{ this is not valid json ]";
     CHECK(writeRawFile(path, invalid));
-    const rdsmon::Config loaded = rdsmon::loadConfig();
-    CHECK(loaded.shares.empty());
+    rdsmon::LoadStatus status = rdsmon::LoadStatus::Ok;
+    const rdsmon::Config loaded = rdsmon::loadConfig(&status);
+    CHECK(status == rdsmon::LoadStatus::Corrupt);
+    CHECK_EQ(loaded.shares.size(), static_cast<std::size_t>(6)); // default shares
     std::string onDisk;
     CHECK(readRawFile(path, onDisk));
-    CHECK_EQ(onDisk, invalid);
+    CHECK_EQ(onDisk, invalid); // not clobbered
 }
 
 // Non-ASCII share names survive a save/load round-trip (UTF-8 on disk).
@@ -252,7 +255,8 @@ TEST(loadConfig_customFileMissingStartsEmptyAndCreates) {
     CHECK(attr != INVALID_FILE_ATTRIBUTES); // file was created
 }
 
-// A custom file that is invalid JSON starts with no data and is not clobbered.
+// A custom file that is invalid JSON (structure corrupt) starts with no data,
+// reports Corrupt, and is not clobbered.
 TEST(loadConfig_customFileInvalidStartsEmptyAndNotClobbered) {
     const std::wstring appData = freshTempAppData();
     rdsmon::setConfigFileName(L"custom.json");
@@ -260,11 +264,23 @@ TEST(loadConfig_customFileInvalidStartsEmptyAndNotClobbered) {
     const std::wstring path = appData + L"\\RDSM\\custom.json";
     const std::string invalid = "{ not valid ]";
     CHECK(writeRawFile(path, invalid));
-    const rdsmon::Config loaded = rdsmon::loadConfig();
+    rdsmon::LoadStatus status = rdsmon::LoadStatus::Ok;
+    const rdsmon::Config loaded = rdsmon::loadConfig(&status);
+    CHECK(status == rdsmon::LoadStatus::Corrupt);
     CHECK(loaded.shares.empty());
     std::string onDisk;
     CHECK(readRawFile(path, onDisk));
     CHECK_EQ(onDisk, invalid);
+}
+
+// A valid file reports Ok (whether it is the default or a custom file).
+TEST(loadConfig_validFileReportsOk) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\"]}"));
+    rdsmon::LoadStatus status = rdsmon::LoadStatus::Corrupt;
+    const rdsmon::Config loaded = rdsmon::loadConfig(&status);
+    CHECK(status == rdsmon::LoadStatus::Ok);
+    CHECK_EQ(loaded.shares.size(), static_cast<std::size_t>(1));
 }
 
 // When APPDATA is empty, configDir() falls back to the bare "RDSM".
@@ -292,15 +308,15 @@ TEST(loadConfig_autoRefreshDefaultWhenAbsent) {
     CHECK_EQ(loaded.autoRefreshMinutes, 15);
 }
 
-// Out-of-range values (below 1 or above 3600) keep the default (15).
-TEST(loadConfig_autoRefreshOutOfRangeKeepsDefault) {
+// Out-of-range values (below 1 or above 3600) fall back to the default of 30.
+TEST(loadConfig_autoRefreshOutOfRangeFallsBackTo30) {
     const std::wstring path = freshConfigPath();
     CHECK(writeRawFile(path, "{\"shares\": [], \"autoRefreshMinutes\": 0}"));
-    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 15);
+    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 30);
     CHECK(writeRawFile(path, "{\"shares\": [], \"autoRefreshMinutes\": 3601}"));
-    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 15);
+    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 30);
     CHECK(writeRawFile(path, "{\"shares\": [], \"autoRefreshMinutes\": -5}"));
-    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 15);
+    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 30);
 }
 
 // The boundary values 1 and 3600 are accepted.

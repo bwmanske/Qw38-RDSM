@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <nlohmann/json.hpp>
 
+#include <cwctype>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -113,7 +115,134 @@ const std::vector<std::wstring>& defaultShares() {
     return shares;
 }
 
+// Lowercase copy, for case-insensitive share-name comparison (Windows share
+// paths and drive letters are case-insensitive).
+std::wstring toLower(const std::wstring& s) {
+    std::wstring r(s);
+    for (wchar_t& c : r) {
+        c = static_cast<wchar_t>(::towlower(static_cast<wint_t>(c)));
+    }
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// Share validation.
+//
+// A share is either a Windows drive letter ("C:" through "Z:") or a UNC path
+// ("\\server\share"). Validation is an extensible pipeline: each check inspects
+// the whole list and may set an error message on any line. A line reports the
+// FIRST error assigned to it (checks run in kShareChecks order), so a check only
+// sets error[i] when it is still empty. To add a new check, write a function
+// with the ShareCheck signature and append it to kShareChecks.
+// ---------------------------------------------------------------------------
+using ShareCheck = void (*)(const std::vector<std::wstring>& shares,
+                            std::vector<std::wstring>& error);
+
+// True if c may appear in a share name component (the server or share name of a
+// UNC path). Alphanumerics plus a conservative set of punctuation seen in real
+// computer/share names. Path separators and other reserved characters are not
+// allowed.
+bool isNameChar(wchar_t c) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+        return true;
+    }
+    switch (c) {
+        case L'-': case L'_': case L'.': case L' ': case L'(': case L')':
+        case L'[': case L']': case L'{': case L'}': case L'@': case L'#':
+        case L'&': case L'+': case L'=': case L'^': case L'~': case L'$':
+        case L'%': case L'"':
+            return true;
+        default:
+            return false;
+    }
+}
+
+// A non-empty name component: at least one character, every character valid.
+bool isValidName(const std::wstring& name) {
+    if (name.empty()) {
+        return false;
+    }
+    for (wchar_t c : name) {
+        if (!isNameChar(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Check: each share must be a well-formed drive letter ("C:".."Z:") or a UNC
+// path ("\\server\share") with valid name characters.
+void checkMalformed(const std::vector<std::wstring>& shares,
+                    std::vector<std::wstring>& error) {
+    for (std::size_t i = 0; i < shares.size(); ++i) {
+        if (!error[i].empty()) {
+            continue;  // already flagged by an earlier check
+        }
+        const std::wstring& s = shares[i];
+
+        // Drive letter: a single letter C-Z (either case) followed by a colon.
+        const bool driveLetter =
+            s.size() == 2 && s[1] == L':' &&
+            ((s[0] >= L'C' && s[0] <= L'Z') || (s[0] >= L'c' && s[0] <= L'z'));
+        if (driveLetter) {
+            continue;
+        }
+
+        // UNC path: exactly two leading backslashes, then server, then a single
+        // backslash, then share (no further backslashes).
+        if (s.size() >= 5 && s[0] == L'\\' && s[1] == L'\\') {
+            const std::size_t sep = s.find(L'\\', 2);
+            if (sep != std::wstring::npos && sep + 1 < s.size()
+                && s.find(L'\\', sep + 1) == std::wstring::npos) {
+                const std::wstring server = s.substr(2, sep - 2);
+                const std::wstring share = s.substr(sep + 1);
+                if (isValidName(server) && isValidName(share)) {
+                    continue;
+                }
+            }
+        }
+
+        error[i] = L"Malformed share: use a drive letter (C:–Z:) or \\\\server\\share";
+    }
+}
+
+// Check: no duplicate share names (case-insensitive). The first occurrence of a
+// name that appears more than once is flagged.
+void checkDuplicates(const std::vector<std::wstring>& shares,
+                     std::vector<std::wstring>& error) {
+    std::map<std::wstring, std::pair<int, int>> firstAndCount; // name -> {firstIndex, count}
+    for (int i = 0; i < static_cast<int>(shares.size()); ++i) {
+        auto& p = firstAndCount[toLower(shares[i])];
+        if (p.second == 0) {
+            p.first = i;
+        }
+        ++p.second;
+    }
+    for (const auto& kv : firstAndCount) {
+        if (kv.second.second > 1) {
+            const int idx = kv.second.first;
+            if (error[idx].empty()) {
+                error[idx] = L"Duplicate share";
+            }
+        }
+    }
+}
+
+// The ordered list of checks. Append new checks here to extend validation.
+const ShareCheck kShareChecks[] = {
+    checkMalformed,
+    checkDuplicates,
+};
+
 } // namespace
+
+std::vector<std::wstring> validateShares(const std::vector<std::wstring>& shares) {
+    std::vector<std::wstring> error(shares.size(), L"");
+    for (ShareCheck check : kShareChecks) {
+        check(shares, error);
+    }
+    return error;
+}
 
 void setConfigFileName(const std::wstring& name) {
     g_customConfigName = name;
@@ -148,7 +277,7 @@ bool ensureConfigDir() {
     return CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
-Config loadConfig() {
+Config loadConfig(LoadStatus* status) {
     ensureConfigDir();
     Config config;
 
@@ -162,6 +291,9 @@ Config loadConfig() {
             // Default file: seed with the original script's shares.
             config.shares = defaultShares();
             saveConfig(config);
+        }
+        if (status) {
+            *status = LoadStatus::Ok;
         }
         return config;
     }
@@ -216,20 +348,34 @@ Config loadConfig() {
             }
         }
 
-        // autoRefreshMinutes: an integer (1-3600); out-of-range values keep the
-        // default (15).
+        // autoRefreshMinutes: an integer (1-3600). An absent field keeps the
+        // default (15); a present but out-of-range value falls back to 30.
         if (j.is_object() && j.contains("autoRefreshMinutes")
             && j["autoRefreshMinutes"].is_number_integer()) {
             int v = j["autoRefreshMinutes"].get<int>();
             if (v >= 1 && v <= 3600) {
                 config.autoRefreshMinutes = v;
+            } else {
+                config.autoRefreshMinutes = 30;
             }
         }
 
+        if (status) {
+            *status = LoadStatus::Ok;
+        }
         return config;
     } catch (const nlohmann::json::exception&) {
-        // File exists but is not valid JSON. Do not clobber it; return empty.
-        return Config{};
+        // File exists but is not valid JSON (structure corrupt). No data was
+        // read. Start with the "new data" — the default shares for the default
+        // file, empty for a custom file — but do NOT write it here: the caller
+        // warns the user and asks permission to rewrite the file.
+        if (!hasCustomConfigFile()) {
+            config.shares = defaultShares();
+        }
+        if (status) {
+            *status = LoadStatus::Corrupt;
+        }
+        return config;
     }
 }
 

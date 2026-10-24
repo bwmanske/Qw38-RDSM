@@ -35,6 +35,13 @@ struct Config {
     int autoRefreshMinutes = 15;       // minutes between automatic checks (1-3600)
 };
 
+// The outcome of loadConfig(). The caller uses Corrupt to warn the user that the
+// file could not be read and to ask permission to rewrite it.
+enum class LoadStatus {
+    Ok,      // file read successfully (or seeded/initialized on first run)
+    Corrupt, // file existed but was not valid JSON; no data was read from it
+};
+
 // Returns %AppData%\RDSM (e.g. C:\Users\<user>\AppData\Roaming\RDSM).
 std::wstring configDir();
 
@@ -57,10 +64,20 @@ bool ensureConfigDir();
 
 // Loads the full configuration from the config file.
 //   Default file: if missing, seeds the 6 default shares (no UI state) and
-//     writes the file; if invalid, returns an empty config (file not clobbered).
+//     writes the file. If the structure is corrupt (not valid JSON), no data is
+//     read; the config is seeded with the default shares and *status is set to
+//     Corrupt (the file is NOT written here — the caller asks the user first).
 //   Custom file:  if missing, returns an empty config and writes (initializes)
-//     the file; if invalid, returns an empty config (file not clobbered).
-Config loadConfig();
+//     the file. If the structure is corrupt, no data is read; the config is
+//     empty and *status is set to Corrupt (file NOT written here).
+// *status (if non-null) receives the load outcome.
+Config loadConfig(LoadStatus* status = nullptr);
+
+// Validates a share list. Returns a vector parallel to `shares` where entry i
+// is a human-readable error for shares[i] (an empty string means the line is
+// valid). Validation is an extensible pipeline of checks (see shares.cpp); a
+// line reports the first error assigned to it, in check order.
+std::vector<std::wstring> validateShares(const std::vector<std::wstring>& shares);
 
 // Saves the full configuration to the config file. Returns true on success.
 bool saveConfig(const Config& config);

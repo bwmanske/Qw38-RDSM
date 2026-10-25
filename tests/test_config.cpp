@@ -327,3 +327,71 @@ TEST(loadConfig_autoRefreshBoundaryValues) {
     CHECK(writeRawFile(path, "{\"shares\": [], \"autoRefreshMinutes\": 3600}"));
     CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 3600);
 }
+
+// Non-integer elements in columnWidths are skipped; only integers are kept.
+TEST(loadConfig_columnWidthsSkipsNonIntegers) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path,
+                       "{\"shares\": [\"C:\"], \"columnWidths\": [300, \"abc\", 120, 120, 150]}"));
+    const rdsmon::Config loaded = rdsmon::loadConfig();
+    CHECK_EQ(loaded.columnWidths.size(), static_cast<std::size_t>(4));
+    if (loaded.columnWidths.size() == 4) {
+        CHECK_EQ(loaded.columnWidths[0], 300);
+        CHECK_EQ(loaded.columnWidths[1], 120);
+        CHECK_EQ(loaded.columnWidths[2], 120);
+        CHECK_EQ(loaded.columnWidths[3], 150);
+    }
+}
+
+// A windowSize object missing its height is not loaded (hasWindowSize stays false).
+TEST(loadConfig_windowSizeMissingHeightNotLoaded) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\"], \"windowSize\": {\"width\": 1000}}"));
+    const rdsmon::Config loaded = rdsmon::loadConfig();
+    CHECK(!loaded.hasWindowSize);
+}
+
+// A windowSize object with a non-integer width is not loaded.
+TEST(loadConfig_windowSizeNonIntegerNotLoaded) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path,
+                       "{\"shares\": [\"C:\"], \"windowSize\": {\"width\": 1000.5, \"height\": 600}}"));
+    const rdsmon::Config loaded = rdsmon::loadConfig();
+    CHECK(!loaded.hasWindowSize);
+}
+
+// A windowPosition object missing its y is not loaded (hasWindowPosition stays false).
+TEST(loadConfig_windowPositionMissingYNotLoaded) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\"], \"windowPosition\": {\"x\": 50}}"));
+    const rdsmon::Config loaded = rdsmon::loadConfig();
+    CHECK(!loaded.hasWindowPosition);
+}
+
+// A non-integer autoRefreshMinutes is ignored; the default (15) is kept.
+TEST(loadConfig_autoRefreshNonIntegerKeepsDefault) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\"], \"autoRefreshMinutes\": 15.5}"));
+    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 15);
+}
+
+// A string autoRefreshMinutes is ignored; the default (15) is kept.
+TEST(loadConfig_autoRefreshStringKeepsDefault) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\"], \"autoRefreshMinutes\": \"15\"}"));
+    CHECK_EQ(rdsmon::loadConfig().autoRefreshMinutes, 15);
+}
+
+// A structurally valid file whose shares contain an error (a duplicate) still
+// loads with status Ok: loadConfig does not validate, it only reads. The error
+// is detected separately by validateShares.
+TEST(loadConfig_validFileWithInvalidSharesReportsOk) {
+    const std::wstring path = freshConfigPath();
+    CHECK(writeRawFile(path, "{\"shares\": [\"C:\", \"C:\"]}"));
+    rdsmon::LoadStatus status = rdsmon::LoadStatus::Corrupt;
+    const rdsmon::Config loaded = rdsmon::loadConfig(&status);
+    CHECK(status == rdsmon::LoadStatus::Ok);
+    CHECK_EQ(loaded.shares.size(), static_cast<std::size_t>(2));
+    const std::vector<std::wstring> errors = rdsmon::validateShares(loaded.shares);
+    CHECK(!errors[0].empty()); // the duplicate is caught by validateShares
+}

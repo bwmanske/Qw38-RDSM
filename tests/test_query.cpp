@@ -44,3 +44,12 @@ TEST(queryShare_preservesName) {
     rdsmon::ShareResult bad = queryShare(L"C:\\rdsmon_no_such_dir_xyz_12345");
     CHECK_EQ(bad.name, std::wstring(L"C:\\rdsmon_no_such_dir_xyz_12345"));
 }
+
+// An empty share name has no path to query and fails (no crash).
+TEST(queryShare_emptyNameFails) {
+    rdsmon::ShareResult r = queryShare(L"");
+    CHECK_EQ(r.name, std::wstring(L""));
+    CHECK(!r.ok);
+    CHECK(!r.error.empty());
+    CHECK(r.totalBytes == 0);
+}

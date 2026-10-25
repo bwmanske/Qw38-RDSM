@@ -53,3 +53,18 @@ TEST(formatBytes_boundaryRounding) {
     // 1024 * 1024 - 1 bytes = 1023.999... KB, which rounds to 1024.00 KB.
     CHECK_EQ(formatBytes(1024u * 1024u - 1u), std::wstring(L"1024.00 KB"));
 }
+
+// Just above a unit boundary the value is reported in the new unit.
+TEST(formatBytes_justAboveBoundary) {
+    // 1024 * 1024 + 1 bytes = 1.00000095 MB, which formats as 1.00 MB.
+    CHECK_EQ(formatBytes(1024u * 1024u + 1u), std::wstring(L"1.00 MB"));
+    // 1024 + 1 bytes = 1.000976 KB, which formats as 1.00 KB.
+    CHECK_EQ(formatBytes(1024u + 1u), std::wstring(L"1.00 KB"));
+}
+
+// Values beyond a petabyte are capped at the PB unit (there is no exabyte unit).
+TEST(formatBytes_exceedsPetabyte) {
+    // 1024^6 bytes = 1024 PB (the value is expressed in the top unit, PB).
+    CHECK_EQ(formatBytes(1024ull * 1024ull * 1024ull * 1024ull * 1024ull * 1024ull),
+             std::wstring(L"1024.00 PB"));
+}

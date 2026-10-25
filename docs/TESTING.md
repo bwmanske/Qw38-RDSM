@@ -85,15 +85,16 @@ exit code to mark the test passed or failed.
 
 | Area | Function(s) | Notes |
 | --- | --- | --- |
-| Byte formatting | `formatBytes` | B/KB/MB/GB/TB/PB boundaries, `%.2f` rendering, and rounding just below a unit boundary |
+| Byte formatting | `formatBytes` | B/KB/MB/GB/TB/PB boundaries, `%.2f` rendering, rounding just below a unit boundary, just above a boundary, and values beyond PB capped at PB |
 | Percent formatting | `formatPercent` | one-decimal rendering |
-| Share query | `queryShare` | success on a local drive (`C:`), trailing-backslash input, fast failure on a missing path, name preserved |
+| Share query | `queryShare` | success on a local drive (`C:`), trailing-backslash input, fast failure on a missing path, empty name fails, name preserved |
 | Config path | `configDir`, `configFilePath`, `setConfigFileName` | derived from `%APPDATA%`, the `--JSON` custom-name path, and the bare-`RDSM` fallback when `APPDATA` is empty |
 | Config dir | `ensureConfigDir` | creates the `RDSM` directory |
-| Config I/O | `saveConfig`, `loadConfig` | shares round-trip (incl. Unicode), first-run seeding of the 6 defaults, bare top-level array, invalid JSON (empty + not clobbered), non-string elements skipped, object without a `shares` key, empty list |
-| UI state | `saveConfig`, `loadConfig` | column widths / window size / window position round-trip, and reported absent when not saved |
-| Auto refresh | `saveConfig`, `loadConfig` | `autoRefreshMinutes` round-trip; default (15) when absent; out-of-range (0, 3601, negative) keeps default; boundary values 1 and 3600 accepted |
+| Config I/O | `saveConfig`, `loadConfig` | shares round-trip (incl. Unicode), first-run seeding of the 6 defaults, bare top-level array, invalid JSON (empty + not clobbered), non-string elements skipped, object without a `shares` key, empty list, and a structurally valid file with invalid shares reports Ok (validation is separate) |
+| UI state | `saveConfig`, `loadConfig` | column widths / window size / window position round-trip, reported absent when not saved, and missing/non-integer fields not loaded |
+| Auto refresh | `saveConfig`, `loadConfig` | `autoRefreshMinutes` round-trip; default (15) when absent; out-of-range (0, 3601, negative) falls back to 30; non-integer/string values keep the default (15); boundary values 1 and 3600 accepted |
 | Custom file | `loadConfig` | missing custom file starts empty + is created; invalid custom file starts empty + not clobbered |
+| Share validation | `validateShares` | valid drive letters + UNC paths; malformed (drive-letter variants, UNC subdirectory/trailing-backslash/single-backslash, invalid name chars); case-insensitive duplicates (first occurrence flagged); malformed takes precedence over duplicate; valid UNC names with spaces/punctuation; empty list |
 
 ### Test isolation for the config tests
 
@@ -121,7 +122,7 @@ and running `build\bin\Release\RDSM.exe`:
 
 - the free-space bar renders in the **Free %** column,
 - offline rows show **Offline** in the **Total Size** column,
-- **File → Edit Shares…** adds/updates/removes/reorders (Move Up/Move Down) entries and rewrites `shares.json`; a duplicated share shows its first instance in **red** and Save/Cancel/X are **grayed out** until the duplicate is fixed; Move Up/Move Down gray out at the top/bottom and with 0–1 shares,
+- **File → Edit Shares…** adds/updates/removes/reorders (Move Up/Move Down) entries and rewrites `shares.json`; any line with an error (malformed or duplicate) is drawn in **red** with the selected line's error shown in a red lower-left label, **Save** is grayed out while the current list has an error, and Cancel/X are grayed out when the initially loaded (saved) list has an error; Move Up/Move Down gray out at the top/bottom and with 0–1 shares,
 - **Help → About** shows the image, version, and build time,
 - **File → Refresh** (F5) re-queries without crashing.
 

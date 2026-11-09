@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // "model": "lmstudio/qwen/qwen3.6-27b"
+  // "model": "lmstudio/qwen/qwen3.8-27b"
+  "model": "lmstudio/jackrong/qwopus3.8-27b-coder-fast"
+}

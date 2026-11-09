@@ -43,6 +43,11 @@ enum : UINT {
 // Timer ID for the auto-refresh timer.
 const UINT_PTR IDT_AutoRefresh = 1;
 
+// Timeout (ms) for each Drobo detection/capacity query: DNS resolution, TCP
+// connect to port 5000, and every read phase. Keeps a non-Drobo share behind a
+// filtered port from stalling the worker thread for long.
+const int kDroboTimeoutMs = 2000;
+
 // This SDK's ListView_SetItemText macro assigns the text to LV_ITEM.pszText
 // (a non-const LPWSTR), which rejects string literals under /Zc:strictStrings.
 // These helpers set text via an LVITEMW instead. The const_cast is safe: the
@@ -577,9 +582,62 @@ void App::startWorker() {
 
     HWND hwnd = hwnd_;
     workerThread_ = std::thread([this, hwnd, localShares] {
+        // Drop cached detection results for servers no longer in the list (a
+        // share was removed). Only this thread touches droboCache_.
+        rdsmon::pruneDroboCache(droboCache_, localShares);
+
         PostMessageW(hwnd, WM_APP_CLEAR, 0, 0);
         for (std::size_t i = 0; i < localShares.size(); ++i) {
-            rdsmon::ShareResult r = rdsmon::queryShare(localShares[i]);
+            const std::wstring& share = localShares[i];
+            rdsmon::ShareResult r;
+            bool queried = false;
+
+            if (!rdsmon::isDriveShare(share)) {
+                // Network share: check whether the server is a Drobo, whose SMB
+                // shares report thin-provisioned sizes. The detection result is
+                // cached per server until that server leaves the list (or the app
+                // exits), so it runs once here on first query — at startup for
+                // existing shares and right after Save for newly added ones.
+                const std::wstring server = rdsmon::serverFromUnc(share);
+                if (!server.empty()) {
+                    auto it = droboCache_.find(rdsmon::normalizeServer(server));
+                    if (it == droboCache_.end()) {
+                        // A failure (timeout, refused) caches "not a Drobo" so the
+                        // timeout is not paid again on every refresh.
+                        rdsmon::DroboCapacity cap;
+                        std::wstring ip;
+                        const bool detected =
+                            rdsmon::queryDrobo(server, kDroboTimeoutMs, cap, &ip);
+                        it = droboCache_.emplace(rdsmon::normalizeServer(server),
+                                                 rdsmon::DroboInfo{detected, ip}).first;
+                    }
+                    if (it->second.isDrobo) {
+                        // Re-query live capacity every refresh (free space changes).
+                        // Use the IP resolved at detection time to avoid DNS.
+                        rdsmon::DroboCapacity cap;
+                        const std::wstring host = it->second.ip.empty() ? server : it->second.ip;
+                        if (rdsmon::queryDrobo(host, kDroboTimeoutMs, cap)) {
+                            r.name = share;
+                            r.ok = true;
+                            r.totalBytes = cap.totalBytes;
+                            r.usedBytes = cap.usedBytes;
+                            r.freeBytes = cap.freeBytes;
+                            if (cap.totalBytes > 0) {
+                                r.freePercent = static_cast<double>(cap.freeBytes) /
+                                                static_cast<double>(cap.totalBytes) * 100.0;
+                            }
+                            queried = true;
+                        }
+                    }
+                }
+            }
+
+            if (!queried) {
+                // Drive letter, non-Drobo server, or the Drobo protocol failed this
+                // cycle: standard SMB query (reports Offline when the share is down).
+                r = rdsmon::queryShare(share);
+            }
+
             {
                 std::lock_guard<std::mutex> lk(resultsMutex_);
                 if (i < results_.size()) {

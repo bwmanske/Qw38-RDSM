@@ -1,3 +1,7 @@
+// winsock2.h must come before windows.h (the Drobo status queries in
+// src/drobo.cpp use Winsock; WSAStartup is done below).
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
 #include <commctrl.h>
@@ -47,12 +51,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int) {
     ULONG_PTR gdiToken = 0;
     GdiplusStartup(&gdiToken, &gdiInput, nullptr);
 
+    // Winsock for the Drobo status queries (src/drobo.cpp). If this fails, the
+    // queries simply fail and fall back to SMB.
+    WSADATA wsaData{};
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+
     int result = 0;
     App* app = App::instance();
     if (app->init(hInstance)) {
         result = app->run();
     }
 
+    WSACleanup();
     GdiplusShutdown(gdiToken);
     return result;
 }

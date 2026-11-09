@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "drobo.h"
 #include "shares.h"
 
 // Custom messages posted from the worker thread (or the ListView subclass) to
@@ -92,6 +93,11 @@ private:
     rdsmon::Config config_;
     std::vector<rdsmon::ShareResult> results_;
     std::mutex resultsMutex_;
+
+    // Per-server Drobo detection cache (in memory only; gone when the app
+    // exits). Populated lazily by the worker thread on first query of a share,
+    // pruned after each config change. Only the worker touches it, so no lock.
+    rdsmon::DroboCache droboCache_;
 
     std::atomic<bool> workerRunning_{false};
     std::atomic<bool> stopRequested_{false};

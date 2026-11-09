@@ -1,6 +1,6 @@
 # RDSM — Remote Disk Space Monitor (Spec & Session Context)
 
-**Version: 1.0** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
+**Version: 1.1** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
 the About dialog and this doc).
 
 ## Overview
@@ -64,6 +64,15 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
       itself has an error (e.g. the user hand-edited the JSON), they are grayed out, since
       closing would return to bad data.
 
+14. **Drobo NAS support:** Drobo volumes are thin-provisioned, so `GetDiskFreeSpaceEx`
+    reports the virtual volume size (e.g. 64 TiB) instead of real capacity on a Drobo SMB
+    share. For every share that is not a Windows drive letter (`X:`), check whether its
+    server is a Drobo and, if so, query the real device-level capacity from the Drobo
+    status daemon (TCP port 5000) instead of via SMB. The detection result is cached per
+    server until that server leaves the share list or the app exits; when adding a share,
+    its server is checked before its data is queried; and removing a share cleans up its
+    cached values.
+
 ## Design decisions
 
 - **Config file:** `%APPDATA%\RDSM\shares.json` by default, or `%APPDATA%\RDSM\<FileName>`
@@ -107,6 +116,36 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
   `WM_APP_CLEAR` / `WM_APP_SHARE_RESULT` (wParam = row index) / `WM_APP_DONE` to the main
   window. Results are stored in `App::results_` guarded by `App::resultsMutex_`.
   `App::stopWorker()` joins the thread (called before the edit dialog and on destroy).
+- **Drobo NAS support:** Drobo volumes are thin-provisioned, so `GetDiskFreeSpaceEx` on a
+  Drobo SMB share reports the virtual volume size (e.g. 64 TiB), not real capacity. The
+  real numbers come from the Drobo status daemon: it listens on **TCP port 5000** and, as
+  soon as a connection is established, pushes an XML document ("NASD-XML-format", see the
+  droboports wiki) — no command needs to be sent. The document's
+  `mTotalCapacityProtected` / `mUsedCapacityProtected` / `mFreeCapacityProtected` fields
+  (bytes) are **device-level** (the whole NAS, not per share) and match what Drobo
+  Dashboard shows; every share on the same Drobo therefore reports identical numbers.
+  - **Detection + query in one step:** connect to port 5000 with a ~2 s timeout (non-
+    blocking `connect` + `select()`, plus `SO_RCVTIMEO` on reads), read the 16-byte header
+    whose last four bytes are the big-endian body length, then the body — one frame per
+    connection, after which the device stops sending. The `DRINASD` magic sits in the first
+    seven bytes of the **header** (older firmwares reportedly prefix the document itself);
+    anything else means "not a Drobo". A successful parse both detects and queries.
+  - **Caching:** `App::droboCache_` (`rdsmon::DroboCache`, keyed by lowercased server name)
+    stores `{isDrobo, resolved IP}` per server, in memory only (gone at exit). The worker
+    thread populates it lazily on the first query of a share — which happens at startup for
+    existing shares and right after Save for newly added ones — so no separate "check at
+    add time" code path is needed. A detection failure caches `false` (not a Drobo) so the
+    timeout is not paid again every refresh; the cached IP avoids DNS lookups on later
+    queries (`getaddrinfo` has no timeout of its own). After each config change the worker
+    prunes entries whose server left the list. Only the worker touches the cache (no lock).
+  - **Fallbacks:** a share that is not a Drobo (or whose server name cannot be extracted)
+    uses the normal SMB `queryShare`. If a cached-Drobo share's protocol query fails on a
+    later refresh, it falls back to SMB for that cycle (which shows Offline if the device
+    is down). The connection is closed after one read: the Drobo re-sends the document
+    every 10–20 s while a connection stays open.
+  - **Winsock:** `WSAStartup`/`WSACleanup` run in `wWinMain`; `ws2_32` is linked for both
+    RDSM and RDSMTests. The Winsock APIs are ANSI-only, so host names/IPs are converted
+    with `WideCharToMultiByte`/`MultiByteToWideChar`.
 - **GDI+ usage:** custom-draw (`NM_CUSTOMDRAW`) renders a free-space bar in the `Free %`
   column: light-gray track, filled portion = free %, color green (>50%), amber (>20%),
   red (≤20%), percentage text centered on top. GDI+ is started/stopped in `wWinMain`.
@@ -300,7 +339,8 @@ capture the behavior the drawing cannot show.
 ```
 CMakeLists.txt                 MSVC, C++17, /W4 /permissive- /utf-8, UNICODE defines,
                                  RDSM_VERSION, BuildInfo custom target, links comctl32 gdiplus
-                                 gdi32 user32 shell32 ole32 advapi32 kernel32, WIN32 subsystem,
+                                 gdi32 user32 shell32 ole32 advapi32 ws2_32 kernel32,
+                                 WIN32 subsystem,
                                  exe -> build/bin
 build.ps1                      build helper: stop RDSM.exe, configure, build, test
                                  (wraps the CMake commands; see docs/BUILDING.md)
@@ -318,6 +358,7 @@ third_party/nlohmann/json.hpp  vendored nlohmann/json v3.12.0 (single header)
 src/
   main.cpp                     wWinMain: parse --JSON <FileName> (CommandLineToArgvW),
                                  InitCommonControlsEx (LISTVIEW|BAR), GdiplusStartup,
+                                 WSAStartup/WSACleanup (Drobo status queries in src/drobo.cpp),
                                  App::instance()->init()/run(), GdiplusShutdown
    app.h / app.cpp              App singleton: window class (+IDI_APP icon), menu, ListView,
                                   status bar, worker thread, GDI+ custom draw, WM_APP_* handling,
@@ -329,6 +370,10 @@ src/
                                   hasCustomConfigFile/ensureConfigDir, loadConfig/saveConfig
                                   (nlohmann), queryShare (GetDiskFreeSpaceExW, trailing
                                   backslash appended), formatBytes/formatPercent, lastErrorString
+   drobo.h / drobo.cpp          namespace rdsmon: Drobo NAS support — isDriveShare/
+                                  serverFromUnc/normalizeServer/pruneDroboCache (per-server
+                                  detection cache), parseDroboXml, queryDrobo (TCP 5000
+                                  status daemon pushes DRINASD* XML; device-level capacity)
     editdialog.h / editdialog.cpp  EditDialog::show(parent, initial, outShares) -> bool:
                                    add/update/remove + move up/down, system GUI font
    settingsdialog.h / settingsdialog.cpp  SettingsDialog::show(parent, current, out) -> bool:
@@ -371,8 +416,10 @@ ctest --test-dir build -C Release --output-on-failure
 - Output: `build\bin\Release\RDSM.exe`.
 - Each build runs the `BuildInfo` custom target, regenerating
   `build\generated\build_info.h` (version + build timestamp) before compiling.
-- Unit tests (CTest) cover the non-GUI logic in `src/shares.cpp`; the GUI is
-  verified by running the exe. See `docs/TESTING.md`. No linter.
+- Unit tests (CTest) cover the non-GUI logic in `src/shares.cpp` and
+  `src/drobo.cpp` (the Drobo network code itself needs a device, so only its pure
+  helpers are tested); the GUI is verified by running the exe. See
+  `docs/TESTING.md`. No linter.
 
 ## Environment gotchas
 
@@ -441,7 +488,7 @@ that broke the Free % bar and has been removed.
       them locally (guarded `#ifndef`: `DA_DRAWN 1`, `DA_REDO 2`, `DA_SKIP 3`) for the
       owner-drawn list box.
 
-## Current state (v1.0)
+## Current state (v1.1)
 
 Builds clean (no errors, no warnings) and runs. Verified by launching the exe:
 - first run creates `C:\Users\brad\AppData\Roaming\RDSM\shares.json` seeded with the 6 shares;
@@ -479,6 +526,16 @@ and `tests/test_config.cpp`; the GUI prompt/dialog are verified by running the e
   out while the current list has any error. **Cancel and the title-bar X** are enabled only
   when the initially loaded (saved) list passed validation — if the saved list itself has an
   error (e.g. hand-edited JSON), they are grayed out since closing would return to bad data.
+
+**v1.1 — Drobo NAS support:** for every share that is not a Windows drive letter, the worker
+thread checks whether its server is a Drobo (TCP port 5000 status daemon; ~2 s timeout) and,
+if so, shows the real device-level capacity from the pushed "NASD-XML-format" document instead
+of the thin-provisioned SMB numbers. Detection results are cached per server in memory until
+the server leaves the list or the app exits (a detection failure caches "not a Drobo", so the
+timeout is paid once); the cache is pruned at each worker start and only the worker touches it.
+A cached-Drobo share whose query fails on a later refresh falls back to SMB for that cycle. The
+pure helpers are unit-tested in `tests/test_drobo.cpp` (73 tests total). Live-verified against
+a real Drobo (firmware 4.3.1): the numbers match Drobo Dashboard.
 
 Exe: `build\bin\Release\RDSM.exe` (note the `Release` subdir — the VS multi-config
 generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).

@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Project version (shown in the About dialog; see specs/RDSM spec.md).
-set(RDSM_VERSION "1.0")
+set(RDSM_VERSION "1.1")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -16,6 +16,7 @@ set(SOURCES
     src/main.cpp
     src/app.cpp
     src/shares.cpp
+    src/drobo.cpp
     src/editdialog.cpp
     src/settingsdialog.cpp
     src/aboutdialog.cpp
@@ -25,6 +26,7 @@ set(SOURCES
 set(HEADERS
     src/app.h
     src/shares.h
+    src/drobo.h
     src/editdialog.h
     src/settingsdialog.h
     src/aboutdialog.h
@@ -68,6 +70,7 @@ target_link_libraries(RDSM PRIVATE
     shell32
     ole32
     advapi32
+    ws2_32
     kernel32
 )
 
@@ -86,8 +89,10 @@ set_target_properties(RDSM PROPERTIES
 # ---------------------------------------------------------------------------
 # Unit tests (CTest). See docs/TESTING.md.
 #
-# Only the non-GUI logic (src/shares.cpp) is unit tested; the window/dialog
-# code needs a desktop and is verified by running the exe. Disable with
+# Only the non-GUI logic (src/shares.cpp, src/drobo.cpp) is unit tested; the
+# window/dialog code needs a desktop and is verified by running the exe. The
+# Drobo network code itself is not exercised in tests (no network); its pure
+# helpers (parsing, XML extraction, cache pruning) are. Disable with
 # -DBUILD_TESTING=OFF.
 # ---------------------------------------------------------------------------
 enable_testing()
@@ -100,7 +105,9 @@ if(BUILD_TESTING)
         tests/test_query.cpp
         tests/test_config.cpp
         tests/test_validate.cpp
+        tests/test_drobo.cpp
         src/shares.cpp
+        src/drobo.cpp
     )
 
     target_include_directories(RDSMTests PRIVATE
@@ -116,7 +123,9 @@ if(BUILD_TESTING)
         WIN32_LEAN_AND_MEAN
     )
 
-    target_link_libraries(RDSMTests PRIVATE kernel32)
+    # ws2_32: src/drobo.cpp uses Winsock (the tests exercise only its pure
+    # helpers, but the object file still needs to link).
+    target_link_libraries(RDSMTests PRIVATE ws2_32 kernel32)
 
     if(MSVC)
         target_compile_options(RDSMTests PRIVATE /W4 /permissive- /utf-8)

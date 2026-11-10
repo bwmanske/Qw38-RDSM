@@ -56,13 +56,15 @@ ctest --test-dir build -C Release --output-on-failure
 - `aboutdialog.cpp` — modal "About" dialog (Help menu): GDI+ `WM_PAINT` of `RDSM_128.png` (embedded `RCDATA`, loaded via `CreateStreamOnHGlobal` + `Bitmap::FromStream`) at top-center, plus name, version, and build time from `build_info.h`.
 - `resources/resources.rc` — embeds the manifest, `RDSM.ico` (`IDI_APP`), and `RDSM_128.png` (`IDR_ABOUT_PNG`); IDs shared via `resources/resources.h`.
 
-## Current state (v1.1)
+## Current state (v1.2)
 
 Builds clean (no errors, no warnings) and runs. Verified: first run creates `%APPDATA%\RDSM\shares.json` seeded with the 6 shares; subsequent runs load it; window title "Remote Disk Space Monitor"; clean shutdown; icon + About image embedded in the exe; `--JSON <FileName>` creates/uses `%APPDATA%\RDSM\<FileName>` (missing custom file starts empty); config persists `autoRefreshMinutes` (always written, default 15). Exe: `build\bin\Release\RDSM.exe`.
 
 **v1.0 — config error detection and correction:** a corrupt (unparseable) config file is not read; the app starts cleanly (default shares for the default file, empty for a custom file), warns the user, and asks permission to overwrite the file (declining keeps the data in memory only). `autoRefreshMinutes` out of range (1–3600) falls back to 30. The Edit Shares dialog runs an extensible error test (`rdsmon::validateShares`: malformed + duplicate shares), shows the selected line's error in a red lower-left label; Save is grayed out while the current list has an error, and Cancel/X are grayed out when the initially loaded (saved) list itself has an error (closing would return to bad data). Unit-tested in `tests/test_validate.cpp` + `tests/test_config.cpp`; the GUI prompt/dialog are verified by running the exe.
 
 **v1.1 — Drobo NAS support:** for every share that is not a Windows drive letter, the worker thread checks whether its server is a Drobo (TCP port 5000 status daemon; ~2 s timeout) and, if so, shows the real device-level capacity from the pushed "NASD-XML-format" document instead of the thin-provisioned SMB numbers. Detection results are cached per server in memory until that server leaves the list or the app exits (a detection failure caches "not a Drobo", so the timeout is paid once); the cache is pruned at each worker start and only the worker touches it. A cached-Drobo share whose query fails on a later refresh falls back to SMB for that cycle. Pure helpers are unit-tested in `tests/test_drobo.cpp` (73 tests total). Live-verified against a real Drobo (firmware 4.3.1): the numbers match Drobo Dashboard.
+
+**v1.2 — Free % bar color thresholds:** the GDI+ free-space bar colors by how much space is left — green from 30% free and up, amber from under 30% down to 15%, red below 15% (boundaries inclusive). Previously green >50%, amber >20%, red ≤20%.
 
 GDI+ header gaps were shimmed in `src/gdiplus_prelude.h`: `typedef DWORD PROPID;`, `#define MIDL_INTERFACE(x) interface __declspec(novtable, uuid(x))`, and `namespace Gdiplus { typedef unsigned char byte; }`. The manifest is embedded via `resources.rc`, so the linker uses `/MANIFEST:NO` (see CMakeLists) to avoid a duplicate MANIFEST resource.
 

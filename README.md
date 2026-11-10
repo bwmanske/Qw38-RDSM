@@ -6,7 +6,7 @@ C++17 (no runtime dependencies beyond the OS), it is a from-scratch port of the
 original `RDSM.ps1` PowerShell script. Drobo servers are detected automatically and
 report their real device-level capacity instead of the thin-provisioned volume size.
 
-![status](https://img.shields.io/badge/version-1.1-lightgrey)
+![status](https://img.shields.io/badge/version-1.2-lightgrey)
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
 ![language](https://img.shields.io/badge/language-C%2B%2B17-lightgrey)
 
@@ -15,8 +15,8 @@ report their real device-level capacity instead of the thin-provisioned volume s
 - **Live free-space table** — a five-column report view: `Share Name`, `Total
   Size`, `Used Space`, `Free Space`, and `Free %`.
 - **Color-coded free-space bar** — the `Free %` column draws a GDI+ bar: green
-  above 50%, amber above 20%, red at or below 20%, with the percentage centered
-  on top.
+  from 30% free and up, amber from under 30% down to 15%, red below 15%, with
+  the percentage centered on top.
 - **Offline detection** — unreachable shares show `Offline`; selecting the row
   reveals the underlying Win32 error in the status bar.
 - **Drobo NAS support** — Drobo servers are detected automatically; their shares

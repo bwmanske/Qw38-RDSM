@@ -1,6 +1,6 @@
 # RDSM — Remote Disk Space Monitor (Spec & Session Context)
 
-**Version: 1.1** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
+**Version: 1.2** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
 the About dialog and this doc).
 
 ## Overview
@@ -148,8 +148,8 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
     RDSM and RDSMTests. The Winsock APIs are ANSI-only, so host names/IPs are converted
     with `WideCharToMultiByte`/`MultiByteToWideChar`.
 - **GDI+ usage:** custom-draw (`NM_CUSTOMDRAW`) renders a free-space bar in the `Free %`
-  column: light-gray track, filled portion = free %, color green (>50%), amber (>20%),
-  red (≤20%), percentage text centered on top. GDI+ is started/stopped in `wWinMain`.
+  column: light-gray track, filled portion = free %, color green (≥30%), amber (<30% down
+  to 15%), red (<15%), percentage text centered on top. GDI+ is started/stopped in `wWinMain`.
 - **Offline shares:** row shows `Offline` in the `Total Size` column (the column just
   right of the share name); the other size columns are left blank. The Win32 error string
   (via `FormatMessageW`) appears in the status bar when the row is selected.
@@ -239,7 +239,7 @@ capture the behavior the drawing cannot show.
 - **Columns** (default widths 280/110/110/110/130): `Share Name` (left), `Total Size`,
   `Used Space`, `Free Space` (all right-aligned), `Free %` (left).
 - **Free % bar:** GDI+ custom draw — a light-gray track with a filled portion equal to the
-  free %, colored **green** (>50%), **amber** (>20%), **red** (≤20%), with the percentage
+  free %, colored **green** (≥30%), **amber** (<30% down to 15%), **red** (<15%), with the percentage
   text centered on top.
 - **Offline rows:** `Offline` is shown in the `Total Size` column (just right of the share
   name); the other size columns are left blank. Selecting the row shows the Win32 error
@@ -489,7 +489,7 @@ that broke the Free % bar and has been removed.
       them locally (guarded `#ifndef`: `DA_DRAWN 1`, `DA_REDO 2`, `DA_SKIP 3`) for the
       owner-drawn list box.
 
-## Current state (v1.1)
+## Current state (v1.2)
 
 Builds clean (no errors, no warnings) and runs. Verified by launching the exe:
 - first run creates `C:\Users\brad\AppData\Roaming\RDSM\shares.json` seeded with the 6 shares;
@@ -537,6 +537,12 @@ timeout is paid once); the cache is pruned at each worker start and only the wor
 A cached-Drobo share whose query fails on a later refresh falls back to SMB for that cycle. The
 pure helpers are unit-tested in `tests/test_drobo.cpp` (73 tests total). Live-verified against
 a real Drobo (firmware 4.3.1): the numbers match Drobo Dashboard.
+
+**v1.2 — Free % bar color thresholds:** the GDI+ free-space bar in the `Free %` column now
+colors by how much space is left: **green** from 30% free and up, **amber** from under 30% down
+to 15%, **red** below 15% (boundaries inclusive — exactly 30% is green, exactly 15% is amber).
+Previously green >50%, amber >20%, red ≤20%. Pure UI change in the `src/app.cpp` custom draw;
+no logic or data changes.
 
 Exe: `build\bin\Release\RDSM.exe` (note the `Release` subdir — the VS multi-config
 generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).

@@ -416,11 +416,12 @@ LRESULT App::onCustomDraw(NMLVCUSTOMDRAW* pcd) {
             SolidBrush trackBrush(Color(235, 235, 235));
             g.FillRectangle(&trackBrush, x, y, w, h);
 
-            // Filled portion, colored by how much space is free.
+            // Filled portion, colored by how much space is free: green from
+            // 30% free and up, amber from under 30% down to 15%, red below 15%.
             Color fillColor;
-            if (r.freePercent > 50.0) {
+            if (r.freePercent >= 30.0) {
                 fillColor = Color(76, 175, 80);   // green
-            } else if (r.freePercent > 20.0) {
+            } else if (r.freePercent >= 15.0) {
                 fillColor = Color(255, 193, 7);   // amber
             } else {
                 fillColor = Color(229, 115, 115); // red

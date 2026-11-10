@@ -1,6 +1,6 @@
 # AGENTS.md
 
-RDSM (Remote Disk Space Monitor): Win32 C++17 GUI app that queries free space on a list of UNC network shares and Windows drive letters. Port of `RDSM.ps1` (original PowerShell reference). Full context: `specs/RDSM spec.md`.
+RDSM (Remote Disk Space Monitor): Win32 C++17 GUI app that queries free space on a list of UNC network shares, Windows drive letters, and Drobo NAS devices (auto-detected; real device-level capacity via the TCP 5000 status daemon). Port of `RDSM.ps1` (original PowerShell reference). Full context: `specs/RDSM spec.md`.
 
 ## Build
 

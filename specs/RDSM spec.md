@@ -6,8 +6,9 @@ the About dialog and this doc).
 ## Overview
 
 RDSM is a Win32 desktop GUI application (C++17, CMake, MSVC, GDI+) that displays free
-disk space for a user-configurable list of UNC network shares and Windows drive
-letters. It is a port of
+disk space for a user-configurable list of UNC network shares, Windows drive letters,
+and Drobo NAS devices (auto-detected; real device-level capacity via the TCP 5000
+status daemon — see requirement 14). It is a port of
 `RDSM.ps1`, a PowerShell script that P/Invokes `GetDiskFreeSpaceEx` and prints
 total/used/free/percent for each share.
 

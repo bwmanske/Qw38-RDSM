@@ -1,11 +1,12 @@
 # RDSM — Remote Disk Space Monitor
 
 A native Windows desktop app that shows free space across a list of UNC network
-shares and local drive letters at a glance. Built with Win32 + C++17 (no runtime
-dependencies beyond the OS), it is a from-scratch port of the original
-`RDSM.ps1` PowerShell script.
+shares, local drive letters, and Drobo NAS devices at a glance. Built with Win32 +
+C++17 (no runtime dependencies beyond the OS), it is a from-scratch port of the
+original `RDSM.ps1` PowerShell script. Drobo servers are detected automatically and
+report their real device-level capacity instead of the thin-provisioned volume size.
 
-![status](https://img.shields.io/badge/version-0.9-lightgrey)
+![status](https://img.shields.io/badge/version-1.1-lightgrey)
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
 ![language](https://img.shields.io/badge/language-C%2B%2B17-lightgrey)
 
@@ -18,6 +19,9 @@ dependencies beyond the OS), it is a from-scratch port of the original
   on top.
 - **Offline detection** — unreachable shares show `Offline`; selecting the row
   reveals the underlying Win32 error in the status bar.
+- **Drobo NAS support** — Drobo servers are detected automatically; their shares
+  report real device-level capacity from the Drobo status daemon instead of the
+  thin-provisioned volume size SMB reports (matches Drobo Dashboard).
 - **Edit Shares** — add, update, remove, and reorder (Move Up / Move Down)
   entries. The first instance of a duplicated share name is drawn in red, and
   the dialog cannot be closed until duplicates are cleared.
@@ -102,10 +106,10 @@ RDSM.ps1                       original PowerShell reference
 ## Tests
 
 The test suite (`tests/`) unit-tests the non-GUI logic — byte/percent
-formatting, share queries, and config load/save — using a small dependency-free
-harness. Config tests redirect `APPDATA` to a temp directory and never touch the
-real config; query tests use the local `C:` drive and a missing path (no
-network). Run them with:
+formatting, share queries, config load/save, and Drobo XML parsing + cache
+helpers — using a small dependency-free harness. Config tests redirect `APPDATA`
+to a temp directory and never touch the real config; query tests use the local
+`C:` drive and a missing path (no network). Run them with:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure

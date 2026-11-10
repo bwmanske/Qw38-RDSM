@@ -1,6 +1,6 @@
 # RDSM User Guide
 
-Remote Disk Space Monitor (RDSM) shows the free space on a list of network shares (UNC paths) and Windows drive letters in one window, and re-checks them automatically.
+Remote Disk Space Monitor (RDSM) shows the free space on a list of network shares (UNC paths), Windows drive letters, and Drobo NAS devices in one window, and re-checks them automatically.
 
 ## Starting the app
 
@@ -20,6 +20,14 @@ Remote Disk Space Monitor (RDSM) shows the free space on a list of network share
 - A share that can't be reached shows **Offline** in the Total Size column. Selecting that row shows the error in the status bar at the bottom.
 - The status bar normally shows a summary, e.g. `5 of 6 shares online`.
 - **Column widths, window size, and window position are remembered** — resize or move the window and it will look the same next time you start the app.
+
+## Drobo NAS drives
+
+Drobo volumes are **thin-provisioned**: Windows sees a virtual volume size (e.g. 64 TB) instead of the real capacity. RDSM handles this automatically — there is nothing to configure:
+
+- When a share's server turns out to be a Drobo, RDSM queries the Drobo status daemon and shows the **real device-level capacity** — the same numbers Drobo Dashboard reports.
+- The numbers describe the whole Drobo, not individual shares: every share on the same Drobo shows identical Total/Used/Free values.
+- Detection runs once per server while the app is running; if a Drobo is unreachable it falls back to normal share behavior and shows **Offline**.
 
 ## Menu
 
@@ -47,7 +55,7 @@ The dialog shows your current share list on the left and a text box below it. Se
 Notes:
 
 - Changes are only in memory until you click **Save** — closing the window any other way (or clicking Cancel) loses them.
-- Share paths are UNC paths such as `\\server\share`, or Windows drive letters such as `C:` or `D:`. A trailing backslash is not required.
+- Share paths are UNC paths such as `\\server\share`, or Windows drive letters such as `C:` or `D:`. A trailing backslash is not required. Drobo NAS shares work as regular UNC paths (e.g. `\\drobo\games`) — RDSM detects them automatically and shows real device-level capacity (see [Drobo NAS drives](#drobo-nas-drives)).
 - The order of the list is the order the shares appear in the main window.
 - **Duplicate shares are flagged in red.** If the same share appears more than once (case-insensitive, so `C:` and `c:` count as the same), the **first** entry is shown in a red font. While any entry is red you **cannot close the dialog** — Save, Cancel, and the window's X are all **grayed out** — use **Update** to rename one of the duplicates or **Remove** to delete one, and the red marking (and the buttons) clear automatically.
 

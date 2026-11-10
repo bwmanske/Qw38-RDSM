@@ -542,7 +542,8 @@ a real Drobo (firmware 4.3.1): the numbers match Drobo Dashboard.
 colors by how much space is left: **green** from 30% free and up, **amber** from under 30% down
 to 15%, **red** below 15% (boundaries inclusive — exactly 30% is green, exactly 15% is amber).
 Previously green >50%, amber >20%, red ≤20%. Pure UI change in the `src/app.cpp` custom draw;
-no logic or data changes.
+no logic or data changes. Visually verified in the running exe: bar colors at the new thresholds,
+and the About dialog shows Version 1.2.
 
 Exe: `build\bin\Release\RDSM.exe` (note the `Release` subdir — the VS multi-config
 generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).

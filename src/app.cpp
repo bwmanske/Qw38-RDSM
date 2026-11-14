@@ -192,9 +192,16 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // flag the control acts on; it is not stored in the struct.
             return onNotify(reinterpret_cast<NMHDR*>(lParam));
         case WM_APP_CLEAR:
-            populateList(config_.shares);
+            // Ignore a stale pass's clear (it must not wipe a newer pass's
+            // list).
+            if (static_cast<std::uint32_t>(lParam) == runSequence_.load()) {
+                populateList(config_.shares);
+            }
             return 0;
         case WM_APP_SHARE_RESULT: {
+            if (static_cast<std::uint32_t>(lParam) != runSequence_.load()) {
+                return 0; // stale result from a superseded pass
+            }
             int index = static_cast<int>(wParam);
             rdsmon::ShareResult r;
             {
@@ -207,7 +214,9 @@ LRESULT App::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_APP_DONE:
-            updateStatusSummary();
+            if (static_cast<std::uint32_t>(lParam) == runSequence_.load()) {
+                updateStatusSummary();
+            }
             return 0;
         case WM_APP_COLUMN_RESIZED:
             saveColumnWidths();
@@ -229,6 +238,7 @@ void App::onCreate(HWND hwnd) {
     hwnd_ = hwnd;
     buildMenu();
     createListView();
+    startWorker();
     refresh();
     restartAutoRefreshTimer();
 }
@@ -320,7 +330,9 @@ void App::populateList(const std::vector<std::wstring>& shares) {
 }
 
 void App::updateRow(int index, const rdsmon::ShareResult& r) {
-    if (index < 0) {
+    // The list may have been repopulated with a different share count since
+    // this result was produced (the config changed mid-pass).
+    if (index < 0 || index >= ListView_GetItemCount(hwndList_)) {
         return;
     }
     if (r.ok) {
@@ -558,119 +570,151 @@ void App::updateStatusSummary() {
 }
 
 void App::refresh() {
-    startWorker();
+    // Non-blocking: request a pass on the dedicated worker thread. A request
+    // made while a pass is in flight coalesces into one extra pass after the
+    // current one finishes.
+    {
+        std::lock_guard<std::mutex> lk(workerMutex_);
+        refreshRequested_ = true;
+    }
+    workerCv_.notify_one();
 }
 
 void App::startWorker() {
-    if (workerRunning_.load()) {
-        return;
-    }
-    // Join the previous worker thread before starting a new one. workerRunning_
-    // is false, so the prior thread has finished and join() returns immediately.
-    // Without this, assigning a new std::thread to the still-joinable
-    // workerThread_ calls std::terminate() and crashes the app.
-    if (workerThread_.joinable()) {
-        workerThread_.join();
-    }
-    stopRequested_.store(false);
-    workerRunning_.store(true);
-
-    std::vector<std::wstring> localShares = config_.shares;
-    {
-        std::lock_guard<std::mutex> lk(resultsMutex_);
-        results_.assign(localShares.size(), rdsmon::ShareResult{});
-    }
-
-    HWND hwnd = hwnd_;
-    workerThread_ = std::thread([this, hwnd, localShares] {
-        // Drop cached detection results for servers no longer in the list (a
-        // share was removed). Only this thread touches droboCache_.
-        rdsmon::pruneDroboCache(droboCache_, localShares);
-
-        PostMessageW(hwnd, WM_APP_CLEAR, 0, 0);
-        for (std::size_t i = 0; i < localShares.size(); ++i) {
-            const std::wstring& share = localShares[i];
-            rdsmon::ShareResult r;
-            bool queried = false;
-
-            if (!rdsmon::isDriveShare(share)) {
-                // Network share: check whether the server is a Drobo, whose SMB
-                // shares report thin-provisioned sizes. The detection result is
-                // cached per server until that server leaves the list (or the app
-                // exits), so it runs once here on first query — at startup for
-                // existing shares and right after Save for newly added ones.
-                const std::wstring server = rdsmon::serverFromUnc(share);
-                if (!server.empty()) {
-                    auto it = droboCache_.find(rdsmon::normalizeServer(server));
-                    if (it == droboCache_.end()) {
-                        // A failure (timeout, refused) caches "not a Drobo" so the
-                        // timeout is not paid again on every refresh.
-                        rdsmon::DroboCapacity cap;
-                        std::wstring ip;
-                        const bool detected =
-                            rdsmon::queryDrobo(server, kDroboTimeoutMs, cap, &ip);
-                        it = droboCache_.emplace(rdsmon::normalizeServer(server),
-                                                 rdsmon::DroboInfo{detected, ip}).first;
-                    }
-                    if (it->second.isDrobo) {
-                        // Re-query live capacity every refresh (free space changes).
-                        // Use the IP resolved at detection time to avoid DNS.
-                        rdsmon::DroboCapacity cap;
-                        const std::wstring host = it->second.ip.empty() ? server : it->second.ip;
-                        if (rdsmon::queryDrobo(host, kDroboTimeoutMs, cap)) {
-                            r.name = share;
-                            r.ok = true;
-                            r.totalBytes = cap.totalBytes;
-                            r.usedBytes = cap.usedBytes;
-                            r.freeBytes = cap.freeBytes;
-                            if (cap.totalBytes > 0) {
-                                r.freePercent = static_cast<double>(cap.freeBytes) /
-                                                static_cast<double>(cap.totalBytes) * 100.0;
-                            }
-                            queried = true;
-                        }
-                    }
-                }
+    // Dedicated worker thread: lives for the whole app run. All disk access
+    // (SMB queries + Drobo detection/queries) happens in runQueryPass, so the
+    // UI thread never blocks on network I/O.
+    workerThread_ = std::thread([this] {
+        for (;;) {
+            std::unique_lock<std::mutex> lk(workerMutex_);
+            workerCv_.wait(lk, [this] {
+                return refreshRequested_ || stopRequested_.load();
+            });
+            if (stopRequested_.load()) {
+                break;
             }
-
-            if (!queried) {
-                // Drive letter, non-Drobo server, or the Drobo protocol failed this
-                // cycle: standard SMB query (reports Offline when the share is down).
-                r = rdsmon::queryShare(share);
-            }
-
+            refreshRequested_ = false;
+            // Snapshot the share list under the config lock (the UI thread may
+            // replace it while a pass is in flight).
+            std::vector<std::wstring> shares;
             {
-                std::lock_guard<std::mutex> lk(resultsMutex_);
-                if (i < results_.size()) {
-                    results_[i] = r;
-                }
+                std::lock_guard<std::mutex> cl(configMutex_);
+                shares = config_.shares;
             }
-            PostMessageW(hwnd, WM_APP_SHARE_RESULT, static_cast<WPARAM>(i), 0);
+            const std::uint32_t seq = ++runSequence_;
+            lk.unlock();
+            runQueryPass(hwnd_, shares, seq);
         }
-        PostMessageW(hwnd, WM_APP_DONE, 0, 0);
-        workerRunning_.store(false);
     });
 }
 
+void App::runQueryPass(HWND hwnd, const std::vector<std::wstring>& shares,
+                       std::uint32_t seq) {
+    // Drop cached detection results for servers no longer in the list (a
+    // share was removed). Only this thread touches droboCache_.
+    rdsmon::pruneDroboCache(droboCache_, shares);
+
+    {
+        std::lock_guard<std::mutex> lk(resultsMutex_);
+        results_.assign(shares.size(), rdsmon::ShareResult{});
+    }
+
+    PostMessageW(hwnd, WM_APP_CLEAR, 0, static_cast<LPARAM>(seq));
+    for (std::size_t i = 0; i < shares.size(); ++i) {
+        // Exit path: stopWorker() sets this while the app is closing, so the
+        // join there waits at most for the in-flight share's query.
+        if (stopRequested_.load()) {
+            return;
+        }
+        const std::wstring& share = shares[i];
+        rdsmon::ShareResult r;
+        bool queried = false;
+
+        if (!rdsmon::isDriveShare(share)) {
+            // Network share: check whether the server is a Drobo, whose SMB
+            // shares report thin-provisioned sizes. The detection result is
+            // cached per server until that server leaves the list (or the app
+            // exits), so it runs once here on first query — at startup for
+            // existing shares and right after Save for newly added ones.
+            const std::wstring server = rdsmon::serverFromUnc(share);
+            if (!server.empty()) {
+                auto it = droboCache_.find(rdsmon::normalizeServer(server));
+                if (it == droboCache_.end()) {
+                    // A failure (timeout, refused) caches "not a Drobo" so the
+                    // timeout is not paid again on every refresh.
+                    rdsmon::DroboCapacity cap;
+                    std::wstring ip;
+                    const bool detected =
+                        rdsmon::queryDrobo(server, kDroboTimeoutMs, cap, &ip);
+                    it = droboCache_.emplace(rdsmon::normalizeServer(server),
+                                             rdsmon::DroboInfo{detected, ip}).first;
+                }
+                if (it->second.isDrobo) {
+                    // Re-query live capacity every refresh (free space changes).
+                    // Use the IP resolved at detection time to avoid DNS.
+                    rdsmon::DroboCapacity cap;
+                    const std::wstring host = it->second.ip.empty() ? server : it->second.ip;
+                    if (rdsmon::queryDrobo(host, kDroboTimeoutMs, cap)) {
+                        r.name = share;
+                        r.ok = true;
+                        r.totalBytes = cap.totalBytes;
+                        r.usedBytes = cap.usedBytes;
+                        r.freeBytes = cap.freeBytes;
+                        if (cap.totalBytes > 0) {
+                            r.freePercent = static_cast<double>(cap.freeBytes) /
+                                            static_cast<double>(cap.totalBytes) * 100.0;
+                        }
+                        queried = true;
+                    }
+                }
+            }
+        }
+
+        if (!queried) {
+            // Drive letter, non-Drobo server, or the Drobo protocol failed this
+            // cycle: standard SMB query (reports Offline when the share is down).
+            r = rdsmon::queryShare(share);
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(resultsMutex_);
+            if (i < results_.size()) {
+                results_[i] = r;
+            }
+        }
+        PostMessageW(hwnd, WM_APP_SHARE_RESULT, static_cast<WPARAM>(i),
+                     static_cast<LPARAM>(seq));
+    }
+    PostMessageW(hwnd, WM_APP_DONE, 0, static_cast<LPARAM>(seq));
+}
+
 void App::stopWorker() {
+    // Exit path only: request a stop, wake the worker if it is waiting, and
+    // join. The worker checks stopRequested_ between shares, so the join
+    // waits at most for the in-flight share's query.
     stopRequested_.store(true);
+    workerCv_.notify_one();
     if (workerThread_.joinable()) {
         workerThread_.join();
     }
 }
 
 void App::showEditDialog() {
-    stopWorker();
+    // The worker keeps running while the dialog is open (no UI-thread join):
+    // an in-flight pass finishes in the background, and once the saved list
+    // starts a new pass its stale results are discarded by the sequence check.
     std::vector<std::wstring> edited;
     if (EditDialog::show(hwnd_, config_.shares, edited)) {
-        config_.shares = edited;
+        {
+            std::lock_guard<std::mutex> lk(configMutex_);
+            config_.shares = edited;
+        }
         rdsmon::saveConfig(config_);
         refresh();
     }
 }
 
 void App::showSettings() {
-    stopWorker();
     int minutes = 0;
     if (SettingsDialog::show(hwnd_, config_.autoRefreshMinutes, minutes)) {
         config_.autoRefreshMinutes = minutes;

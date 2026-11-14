@@ -6,7 +6,7 @@ C++17 (no runtime dependencies beyond the OS), it is a from-scratch port of the
 original `RDSM.ps1` PowerShell script. Drobo servers are detected automatically and
 report their real device-level capacity instead of the thin-provisioned volume size.
 
-![status](https://img.shields.io/badge/version-1.2-lightgrey)
+![status](https://img.shields.io/badge/version-1.3-lightgrey)
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
 ![language](https://img.shields.io/badge/language-C%2B%2B17-lightgrey)
 

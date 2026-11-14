@@ -1,6 +1,6 @@
 # RDSM — Remote Disk Space Monitor (Spec & Session Context)
 
-**Version: 1.2** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
+**Version: 1.3** (single source of truth: `RDSM_VERSION` in `CMakeLists.txt`; surfaced in
 the About dialog and this doc).
 
 ## Overview
@@ -112,11 +112,20 @@ Project root: `C:\Users\brad\Documents\OpenCode\Qwen3.8-RDSM` (not a git repo).
     which reads the current widths via `ListView_GetColumn` and saves the config.
   - **Window resize/move:** `WM_EXITSIZEMOVE` (sent when the user finishes resizing or
     moving the window) saves both the size and position via `GetWindowRect`.
-- **Background worker thread:** share queries run off the UI thread (network shares can
-  hang for seconds). The worker copies the share list, queries each share, and posts
+- **Dedicated worker thread:** all disk access (SMB queries + Drobo detection/queries)
+  runs on a single persistent worker thread (network shares can hang for seconds). The
+  thread lives for the whole app run: `App::refresh()` requests a pass (non-blocking;
+  requests made while a pass is in flight coalesce into one extra pass), and the worker
+  snapshots the share list under `App::configMutex_`, queries each share, and posts
   `WM_APP_CLEAR` / `WM_APP_SHARE_RESULT` (wParam = row index) / `WM_APP_DONE` to the main
-  window. Results are stored in `App::results_` guarded by `App::resultsMutex_`.
-  `App::stopWorker()` joins the thread (called before the edit dialog and on destroy).
+  window, each tagged with the pass sequence number in lParam. The UI discards results
+  whose sequence doesn't match the current pass (stale results from a superseded pass),
+  and `App::updateRow` guards against a changed row count. Results are stored in
+  `App::results_` guarded by `App::resultsMutex_`. `App::stopWorker()` is exit-path only
+  (WM_DESTROY / after the message loop): it sets the stop flag (checked between shares,
+  so the join waits at most for the in-flight share's query) and joins the thread. The
+  edit and settings dialogs no longer stop the worker, so opening them never blocks the
+  UI thread on an in-flight query.
 - **Drobo NAS support:** Drobo volumes are thin-provisioned, so `GetDiskFreeSpaceEx` on a
   Drobo SMB share reports the virtual volume size (e.g. 64 TiB), not real capacity. The
   real numbers come from the Drobo status daemon: it listens on **TCP port 5000** and, as
@@ -489,7 +498,7 @@ that broke the Free % bar and has been removed.
       them locally (guarded `#ifndef`: `DA_DRAWN 1`, `DA_REDO 2`, `DA_SKIP 3`) for the
       owner-drawn list box.
 
-## Current state (v1.2)
+## Current state (v1.3)
 
 Builds clean (no errors, no warnings) and runs. Verified by launching the exe:
 - first run creates `C:\Users\brad\AppData\Roaming\RDSM\shares.json` seeded with the 6 shares;
@@ -544,6 +553,18 @@ to 15%, **red** below 15% (boundaries inclusive — exactly 30% is green, exactl
 Previously green >50%, amber >20%, red ≤20%. Pure UI change in the `src/app.cpp` custom draw;
 no logic or data changes. Visually verified in the running exe: bar colors at the new thresholds,
 and the About dialog shows Version 1.2.
+
+**v1.3 — dedicated worker thread (responsiveness):** all disk access (SMB queries +
+Drobo detection/queries) now runs on a single persistent worker thread that lives for
+the whole app run. `App::refresh()` requests a pass non-blocking (requests made while
+a pass is in flight coalesce into one extra pass); posted results carry a pass
+sequence number in lParam, and the UI discards stale results from superseded passes
+(`App::updateRow` also guards against a changed row count). The Edit Shares and
+Settings dialogs no longer stop the worker, so opening them never blocks the UI
+thread on an in-flight query (previously `App::stopWorker()` joined the in-flight
+worker on the UI thread). `App::stopWorker()` is exit-path only; the worker checks
+the stop flag between shares, so the exit join waits at most for the in-flight
+share's query.
 
 Exe: `build\bin\Release\RDSM.exe` (note the `Release` subdir — the VS multi-config
 generator appends the config to `RUNTIME_OUTPUT_DIRECTORY`).

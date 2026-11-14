@@ -4,6 +4,8 @@
 #include <commctrl.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -13,10 +15,11 @@
 #include "shares.h"
 
 // Custom messages posted from the worker thread (or the ListView subclass) to
-// the UI thread.
+// the UI thread. The worker's messages carry the query-pass sequence number in
+// lParam so the UI can discard stale results from a superseded pass.
 #define WM_APP_CLEAR          (WM_APP + 1)
-#define WM_APP_SHARE_RESULT   (WM_APP + 2) // wParam = row index
-#define WM_APP_DONE           (WM_APP + 3)
+#define WM_APP_SHARE_RESULT   (WM_APP + 2) // wParam = row index, lParam = pass seq
+#define WM_APP_DONE           (WM_APP + 3) // lParam = pass seq
 #define WM_APP_COLUMN_RESIZED (WM_APP + 4) // posted when a column is resized
 
 class App {
@@ -63,9 +66,19 @@ private:
     void populateList(const std::vector<std::wstring>& shares);
     void updateRow(int index, const rdsmon::ShareResult& r);
 
+    // Requests a query pass on the worker thread (non-blocking; requests made
+    // while a pass is in flight coalesce into one extra pass).
     void refresh();
+    // Starts the dedicated worker thread (called once from onCreate). All disk
+    // access — SMB queries and Drobo detection/queries — happens on it.
     void startWorker();
+    // Exit path only (WM_DESTROY / after the message loop): stops the worker
+    // thread and joins it.
     void stopWorker();
+    // One query pass over the given share list (all disk access). Runs on the
+    // worker thread; posts WM_APP_* results tagged with the pass sequence.
+    void runQueryPass(HWND hwnd, const std::vector<std::wstring>& shares,
+                      std::uint32_t seq);
     void showEditDialog();
     void showSettings();
     void showAbout();
@@ -99,9 +112,21 @@ private:
     // pruned after each config change. Only the worker touches it, so no lock.
     rdsmon::DroboCache droboCache_;
 
-    std::atomic<bool> workerRunning_{false};
-    std::atomic<bool> stopRequested_{false};
+    // Dedicated worker thread: lives for the whole app run. refresh() requests
+    // a pass (refreshRequested_, guarded by workerMutex_); stopWorker() ends
+    // the loop (stopRequested_, checked between shares so the exit-path join
+    // waits at most for the in-flight share's query).
     std::thread workerThread_;
+    std::mutex workerMutex_;
+    std::condition_variable workerCv_;
+    bool refreshRequested_ = false;
+    std::atomic<bool> stopRequested_{false};
+    // Sequence number of the current query pass; posted results carry it so
+    // the UI can discard stale results from a superseded pass.
+    std::atomic<std::uint32_t> runSequence_{0};
+    // Guards config_.shares against the worker's start-of-pass snapshot (the
+    // UI thread may replace the list while a pass is in flight).
+    std::mutex configMutex_;
 
     // True while the window is minimized; used to trigger an immediate refresh
     // when the window is restored or maximized.
